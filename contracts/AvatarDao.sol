@@ -62,7 +62,9 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
     uint256 private voteFee;   
     uint256 private votesTotal; 
     uint256 private endTime;     
-    uint256 private withdrawMaxAmt;  
+    uint256 private withdrawMaxAmt;
+    uint256 private withdrawDayAmt;
+    uint256 private withdrawLastTime;
     uint8 private passVoteRate;
     
     bool private lock;
@@ -352,6 +354,11 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
             proposal.totalVotes = totalSupply();
 
             if(proposal.applyAmt > 0){
+                //There is no limit on the address of the white list
+                if(receiverAddressWhiteList[proposal.proposer] < proposal.applyAmt){
+                    require(beforeWithdraw(proposal.applyAmt),"Withdrawal limit exceeded");
+                }
+                
                 IERC20(tokenAddress).safeTransfer(proposal.proposer, proposal.applyAmt);
             }
 
@@ -405,7 +412,6 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         uint256 _settlementTotalAmt,
         uint256 _proposalCount,
         uint256 _totalSupply
-
     ){
         _operateAddress = operateAddress;
         _tokenAddress = tokenAddress;
@@ -475,5 +481,31 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         }else{
             return _a * 100 / _b;
         }
+    }
+
+     /**
+     * @dev Limit withdrawal amount within 24 hours.
+     */ 
+    function beforeWithdraw(uint256 _amt) internal returns(bool){
+        if(_amt == 0){
+            return true;
+        }
+
+        if(block.timestamp - withdrawLastTime > 86400){
+            withdrawLastTime = block.timestamp;
+            withdrawDayAmt = _amt;
+        }else{
+            withdrawDayAmt += _amt;
+        }
+
+        return withdrawMaxAmt >= withdrawDayAmt;
+    }
+
+    function withdrawView() external view returns(
+        uint256,
+        uint256,
+        uint256
+    ){
+        return (withdrawMaxAmt, withdrawDayAmt, withdrawLastTime);
     }
 }
