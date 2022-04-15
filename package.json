@@ -1,0 +1,23 @@
+{
+  "name": "avatardao",
+  "version": "1.0.0",
+  "description": "![](./avatar-img-lg.jpg)",
+  "main": "truffle-config.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@avatar.github.com:AvatarDao/Dao.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@openzeppelin/contracts": "^4.5.0",
+    "@openzeppelin/contracts-upgradeable": "^4.5.2"
+  }
+}

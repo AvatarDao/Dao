@@ -1,91 +1,51 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.10;
+pragma solidity ^0.8.4;
 
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC721/ERC721Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 
 interface ERC20Decimal {
     function decimals() external view returns (uint256);
 }
 
-abstract contract Ownable is Context {
+contract Avatar is Initializable, ERC721Upgradeable, ERC721EnumerableUpgradeable, OwnableUpgradeable, UUPSUpgradeable {
 
-    address private _owner;
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    // safe transfer ERC20
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
-    /**
-     * @dev Initializes the contract setting the deployer as the initial owner.
-     */
-    constructor (address owner_) {
-        _owner = owner_;
-        emit OwnershipTransferred(address(0), owner_);
-    }
+    // ****  STORAGE START (only add, not delete or modify)   **** */
+    uint256 constant proposalTime = 7 days;
+    uint256 constant daoRunTime = 730 days;
 
-    /**
-     * @dev Returns the address of the current owner.
-     */
-    function owner() public view returns (address) {
-        return _owner;
-    }
-
-    /**
-     * @dev Throws if called by any account other than the owner.
-     */
-    modifier onlyOwner() {
-        require(_owner == msg.sender, "Ownable: caller is not the owner");
-        _;
-    }
-
-    /**
-     * @dev Transfers ownership of the contract to a new account (`newOwner`).
-     * Can only be called by the current owner.
-     */
-    function transferOwnership(address newOwner) public virtual onlyOwner {
-        require(newOwner != address(0), "Ownable: new owner is the zero address");
-        emit OwnershipTransferred(_owner, newOwner);
-        _owner = newOwner;
-    }
-}
-
-contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
-
-    using SafeERC20 for IERC20;
-
-    // *******************
-    // GLOBAL PARAMS
-    // *******************
     address private operateAddress;
     address private tokenAddress; 
     uint256 private tokenDecimal;
     uint256 private votePrice; 
     uint256 private voteFee;   
     uint256 private votesTotal; 
-    uint256 private endTime;     
+    uint256 private endTime; 
+    uint256 private joinDeadline;    
     uint256 private withdrawMaxAmt;
     uint256 private withdrawDayAmt;
     uint256 private withdrawLastTime;
-    uint8 private passVoteRate;
-    
-    bool private lock;
+    uint8   private passVoteRate;
+    bool    private lock;
 
-    uint256 constant proposalTime = 7 days;
-    uint256 constant daoRunTime = 730 days;
+    //**  settlment  */
+    bool public settlementSwitch;
+    uint256 public settlementTotalAvgAmt;
 
-
+     /** ADMIN  */
     mapping(address => bool) public membersWhiteList;
     mapping(address => bool) public admins;
     mapping(address => uint256) public receiverAddressWhiteList;
 
-    // *******************
-    // SETTLEMENT
-    // *******************
-    bool public settlementSwitch;
-    uint256 public settlementTotalAvgAmt;
-
-    // *******************
-    // PROPOSAL
-    // *******************
+    //**  proposal  */
     enum Vote {
         Null,
         Yes,
@@ -94,43 +54,50 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
 
     struct Proposal {
         address proposer;
+        uint256 id;
         uint256 applyAmt; 
         uint256 yesVotes;
         uint256 noVotes;
         uint256 totalVotes;
         uint256 deadline;
+        uint256 execuredDeadline;
         bool state;
+        /** Support call */
+        bool executed;
+        address[] targets; //call address
+        string[] signatures; // call functions
+        bytes[] calldatas; // call data
         mapping(uint256 => Vote) votesByMember;
         mapping(uint256 => address) tokenIdByMember;
     }
 
     uint256 public proposalCount;
     mapping (uint256 => Proposal) public proposals;
+    mapping (address => bool) public proposalTargetAddress;
+
+    // ****  STORAGE END ****
 
 
-    // *******************
-    // EVENTS
-    // *******************
+    //**  EVENTS */
     event MemberJoin(address indexed member, uint256 amount, uint8 votes, uint256[] tokenIds);
     event SubmitVote(uint256 indexed proposalId, address indexed member, uint256 indexed tokenId, Vote vote);
-    event SummitProposal(uint256 indexed proposalId, address indexed proposer, uint256 amt);
+    event SummitProposal(uint256 indexed proposalId, address indexed proposer, uint256 amt, address[] targets, string[] signatures, bytes[] calldatas, string description);
     event ProposalPassed(uint256 indexed proposalId, address indexed proposer, uint256 amt);
     event SettlementProfit(address indexed member, uint256 indexed tokenId, uint256 amt);
     event SettlementRefund(address indexed mmeber, uint256 indexed tokenId, uint256 amt);
     event Settlement(uint256 amount, uint256 avgAmt, uint256 time);
+    event ProposalExecuteSuccess(uint256 indexed proposalId);
+    event ProposalExecutedInfo(uint256 indexed proposalId, address target, string signature, bytes data, bytes result);
+    event MemberJoinDedline(uint256 time);
+    event SetAdmin(address admin, bool state);
+    event AddWhiteMember(address member);
+    event SetTargetAddress(address target, bool state);
 
-    
-
-    // *******************
-    // MODIFER FUNCTIONS
-    // *******************
+    //** MODIFER */
     modifier noReentrant() {
         require(lock, "noReentrant call");
-        
         lock = false;
-
         _;
-
         lock = true;
     }
 
@@ -143,10 +110,14 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         require(membersWhiteList[msg.sender],"Not on the white list");
         _;
     }
+    
 
-    constructor(
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() initializer {}
+
+    function initialize(
         address _operateAddress,
-        address _tokenAddress, //The token will validate the contract instance and must be standard erc20 Transfer requires bool to be returned
+        address _tokenAddress, //ERC20 contract
         address _superAdmin,
         uint256 _votePrice,
         uint256 _voteFee,
@@ -155,7 +126,12 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         uint8 _passVoteRate,
         string memory _name,
         string memory _symbol
-    ) ERC721(_name, _symbol) Ownable(_superAdmin) {
+    ) initializer public {
+
+        __ERC721_init(_name, _symbol);
+        __ERC721Enumerable_init();
+        __Ownable_init();
+        __UUPSUpgradeable_init();
 
         require(_tokenAddress != address(0),"token address cannot be 0");
 
@@ -178,12 +154,18 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         passVoteRate = _passVoteRate;
         lock = true;
         admins[_superAdmin] = true;
-    }   
+    }
+
+    function _authorizeUpgrade(address newImplementation) internal view override
+    {
+        require(msg.sender == address(this));
+        require(newImplementation != address(0));
+    }    
 
     // The following functions are overrides required by Solidity.
     function _beforeTokenTransfer(address from, address to, uint256 tokenId)
         internal
-        override(ERC721, ERC721Enumerable)
+        override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
     {
         super._beforeTokenTransfer(from, to, tokenId);
     }
@@ -191,7 +173,7 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(ERC721, ERC721Enumerable)
+        override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
         returns (bool)
     {
         return super.supportsInterface(interfaceId);
@@ -203,34 +185,47 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         operateAddress = _addr;
     }
 
-    /**
-     * @dev Add management address.
-     */
-    function submitAdmin(address _address) public onlyOwner {
-        require(! admins[_address], "address already exists");
-        admins[_address] = true;
+    function setJoinDeadline(uint time) external onlyOwner {
+        require(time > block.timestamp,"time must be greater than the current time");
+        joinDeadline = time;
+        emit MemberJoinDedline(time);
     }
 
     /**
-     * @dev Del management address.
+     * @dev Set management address.
      */
-    function delAdmin(address _address) public onlyOwner {
-        require(admins[_address], "address non-existent");
-        delete admins[_address];
+    function setAdmin(address _address, bool state) external onlyOwner{
+        require(_address != address(0));
+        require(admins[_address] != state , "address error");
+        admins[_address] = state;
+        emit SetAdmin(_address, state);
     }
+
+    /**
+     * @dev Set target address.
+     */
+    function setPropsalTargetAddress(address _address, bool state) external onlyOwner{
+        require(_address != address(0));
+        require(proposalTargetAddress[_address] != state , "address error");
+        proposalTargetAddress[_address] = state;
+        emit SetTargetAddress(_address, state);
+    }
+
+
 
     /**
      * @dev Add whitelist address.
      */
-    function submitWhiteMember(address _address) public onlyAdmin {
+    function submitWhiteMember(address _address) external onlyAdmin {
         require(! membersWhiteList[_address], "address already exists");
         membersWhiteList[_address] = true;
+        emit AddWhiteMember(_address);
     }
 
     /**
      * @dev Add Add proposal whitelist address.
      */
-    function submitReceiverAddressWhite(address _address, uint256 _amt) public onlyAdmin {
+    function submitReceiverAddressWhite(address _address, uint256 _amt) external onlyAdmin {
         receiverAddressWhiteList[_address] = _amt;
     }
 
@@ -249,11 +244,12 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         require(_count <= 3 && _count > 0, "The count scope 1 - 3");
         require(totalSupply() + _count <= votesTotal,"Total limit exceeded");
         require(membersWhiteList[msg.sender], "Not on the white list");
+        require(joinDeadline == 0 || joinDeadline > block.timestamp, "ended");
 
         uint256 amount = votePrice * _count;
         uint256 fee = voteFee * _count;
 
-        IERC20 ERC20token = IERC20(tokenAddress);
+        IERC20Upgradeable ERC20token = IERC20Upgradeable(tokenAddress);
 
         ERC20token.safeTransferFrom(msg.sender, address(this), amount);
         ERC20token.safeTransfer(operateAddress, fee);
@@ -272,40 +268,54 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
 
         emit MemberJoin(msg.sender, amount, _count, tokenIds);
     }
-        
+
+
     /**
      * @dev Submission of proposals.
      */    
     function submitProposal(
         uint256 _proposalId,
         address _proposer, 
-        uint256 _applyAmt
+        uint256 _applyAmt,
+        string memory description,
+        address[] memory targets,
+        string[] memory signatures,
+        bytes[] memory calldatas
     ) external onlyAdmin noReentrant returns (uint256) {
-
         _applyAmt = _applyAmt * tokenDecimal;
         require(_proposer != address(0),"_proposer address cant be 0");
-        require(IERC20(tokenAddress).balanceOf(address(this)) >= _applyAmt,"Insufficient contract assets");
+        require(IERC20Upgradeable(tokenAddress).balanceOf(address(this)) >= _applyAmt,"Insufficient contract assets");
+        require(targets.length < 10,"target length error");
         require(receiverAddressWhiteList[_proposer] > _applyAmt || _applyAmt <= withdrawMaxAmt,"exceeding the maximum limit of a single transaction");
-      
+        require(targets.length == targets.length && targets.length == signatures.length && targets.length == calldatas.length, "proposal function information arity mismatch");
+            
+        for(uint i; i < targets.length; i++){
+            require(proposalTargetAddress[targets[i]],"Target address not allowed");
+        }
+
         proposalCount++;
 
         Proposal storage proposal = proposals[_proposalId];
 
         require(proposal.proposer == address(0),"Non repeatable");
 
+        proposal.id = _proposalId;
         proposal.proposer = _proposer; 
         proposal.applyAmt = _applyAmt;
         proposal.yesVotes = 0;
         proposal.noVotes = 0;
         proposal.deadline = 0;
         proposal.state = false;
+        proposal.executed = false;
+        proposal.targets = targets;
+        proposal.signatures = signatures;
+        proposal.calldatas = calldatas;
 
-        emit SummitProposal(_proposalId, _proposer, _applyAmt);
+        emit SummitProposal(_proposalId, _proposer, _applyAmt, targets, signatures, calldatas, description);
 
         return proposalCount;
     }
-
-
+    
     /**
      * @dev Submit vote of proposal.
      */ 
@@ -352,6 +362,7 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
 
             proposal.state = true;
             proposal.totalVotes = totalSupply();
+            proposal.execuredDeadline = block.timestamp + 3 days;
 
             if(proposal.applyAmt > 0){
                 //There is no limit on the address of the white list
@@ -359,12 +370,45 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
                     require(beforeWithdraw(proposal.applyAmt),"Withdrawal limit exceeded");
                 }
                 
-                IERC20(tokenAddress).safeTransfer(proposal.proposer, proposal.applyAmt);
+                IERC20Upgradeable(tokenAddress).safeTransfer(proposal.proposer, proposal.applyAmt);
             }
 
             emit ProposalPassed(_proposalId, proposal.proposer, proposal.applyAmt);
-        }
+        } 
     } 
+
+
+    /**
+     * @dev Exe of proposal.
+     */
+    function execute(uint _proposalId) external noReentrant {
+        Proposal storage proposal = proposals[_proposalId];
+        require(! proposal.executed,"The proposal has been implemented");
+        require(proposal.state,"The proposal was not adopted");
+        require(proposal.execuredDeadline > block.timestamp, "Proposal implementation has expired");
+        require(proposal.id > 0, "Proposal invalid");
+
+        proposal.executed = true;
+
+        for (uint i = 0; i < proposal.targets.length; i++) {
+
+            bytes memory callData;
+            if (bytes(proposal.signatures[i]).length == 0) {
+                callData = proposal.calldatas[i];
+            } else {
+                callData = abi.encodePacked(bytes4(keccak256(bytes(proposal.signatures[i]))), proposal.calldatas[i]);
+            }
+
+            (bool success, bytes memory data) = address(proposal.targets[i]).call(callData);
+            require(success, "Transaction execution reverted.");
+
+            emit ProposalExecutedInfo(proposal.id, proposal.targets[i], proposal.signatures[i], proposal.calldatas[i], data);
+
+        }   
+
+        emit ProposalExecuteSuccess(proposal.id);
+    }
+
 
     /**
      * @dev settlement profit.
@@ -374,7 +418,7 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         require(count > 0,"Dao not started");
         require(settlementSwitch,"Settlement not started");
 
-        IERC20 ERC20token = IERC20(tokenAddress);
+        IERC20Upgradeable ERC20token = IERC20Upgradeable(tokenAddress);
         uint256 balance = ERC20token.balanceOf(address(this));
         uint256 avg = balance / count;
         require(balance > 0 && avg > 0,"Insufficient profit amount");
@@ -410,7 +454,6 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         uint256 _passVoteCount,
         bool _settlementSwitch,
         uint256 _settlementTotalAmt,
-        uint256 _proposalCount,
         uint256 _totalSupply
     ){
         _operateAddress = operateAddress;
@@ -424,7 +467,6 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         _passVoteCount = passVoteRate;
         _settlementSwitch = settlementSwitch;
         _settlementTotalAmt = settlementTotalAvgAmt;
-        _proposalCount = proposalCount;
         _totalSupply = totalSupply();
     }
 
@@ -459,8 +501,16 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         }
     }
 
-    function balanceERC20() public view returns(uint256){
-        return IERC20(tokenAddress).balanceOf(address(this));
+    function getActions(uint _proposalId) 
+        public 
+        view 
+        returns (
+            address[] memory targets, 
+            string[] memory signatures, 
+            bytes[] memory calldatas
+    ) {
+        Proposal storage proposal = proposals[_proposalId];
+        return (proposal.targets, proposal.signatures, proposal.calldatas);
     }
 
     function getNftForPropsal(uint256 _proposalId, uint256 _tokenId) 
@@ -507,5 +557,10 @@ contract AvatarDao is ERC721, ERC721Enumerable, Ownable {
         uint256
     ){
         return (withdrawMaxAmt, withdrawDayAmt, withdrawLastTime);
+    }
+
+
+    function version() public pure returns(string memory){
+        return "v2";
     }
 }
