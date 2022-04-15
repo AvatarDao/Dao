@@ -13,7 +13,7 @@ interface ERC20Decimal {
     function decimals() external view returns (uint256);
 }
 
-contract Avatar is Initializable, ERC721Upgradeable, ERC721EnumerableUpgradeable, OwnableUpgradeable, UUPSUpgradeable {
+contract AvatarDao is Initializable, ERC721Upgradeable, ERC721EnumerableUpgradeable, OwnableUpgradeable, UUPSUpgradeable {
 
     // safe transfer ERC20
     using SafeERC20Upgradeable for IERC20Upgradeable;
